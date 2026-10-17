@@ -4,6 +4,7 @@ import json
 import shlex
 import subprocess
 from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import Literal
 
 from openai import OpenAI
@@ -23,11 +24,44 @@ BASH_TOOL = {
         "description": "Run a shell command in the current project directory.",
         "parameters": {
             "type": "object",
-            "properties": {"command": {"type": "string", "description": "The shell command to run."}},
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to run.",
+                }
+            },
             "required": ["command"],
         },
     },
 }
+
+
+def load_project_instructions(project_dir: Path | None = None) -> str:
+    """按仓库根目录到当前目录的顺序读取适用的 AGENTS.md。"""
+    current_dir = (project_dir or Path.cwd()).resolve()
+    ancestors = [current_dir, *current_dir.parents]
+    repo_root = next((path for path in ancestors if (path / ".git").exists()), None)
+
+    # 有 Git 仓库时只读取仓库范围内的规则，避免意外加载仓库外的个人文件。
+    scope = [current_dir]
+    if repo_root is not None:
+        scope = []
+        path = current_dir
+        while True:
+            scope.append(path)
+            if path == repo_root:
+                break
+            path = path.parent
+        scope.reverse()
+
+    sections = []
+    for directory in scope:
+        instructions_path = directory / "AGENTS.md"
+        if instructions_path.is_file():
+            content = instructions_path.read_text(encoding="utf-8").strip()
+            if content:
+                sections.append(f"# Instructions from {instructions_path}\n{content}")
+    return "\n\n".join(sections)
 
 
 class MicroAgent:
@@ -38,6 +72,7 @@ class MicroAgent:
         self.config = config
         self.mode: Mode = config.default_mode
         self.messages: list[dict] = []
+        self.project_instructions = load_project_instructions()
         api_url = config.url.rstrip("/")
         if not api_url.endswith("/v1"):
             api_url += "/v1"
@@ -48,7 +83,15 @@ class MicroAgent:
     def run_turn(self, prompt: str) -> None:
         """加入用户输入，并循环请求模型直到本轮不再返回工具调用。"""
         if not self.messages:
-            self.messages.append({"role": "system", "content": self.config.system_prompt})
+            system_prompt = self.config.system_prompt
+            if self.project_instructions:
+                system_prompt += (
+                    "\n\nProject instructions (AGENTS.md):\n"
+                    + self.project_instructions
+                )
+            self.messages.append(
+                {"role": "system", "content": system_prompt}
+            )
         self.messages.append({"role": "user", "content": prompt})
 
         # 每次响应都保留 assistant 工具请求和工具结果，供后续模型调用续接。
@@ -62,7 +105,9 @@ class MicroAgent:
             assistant = response.choices[0].message
             message = {"role": "assistant", "content": assistant.content or ""}
             if assistant.tool_calls:
-                message["tool_calls"] = [call.model_dump(exclude_none=True) for call in assistant.tool_calls]
+                message["tool_calls"] = [
+                    call.model_dump(exclude_none=True) for call in assistant.tool_calls
+                ]
             if reasoning := getattr(assistant, "reasoning_content", None):
                 message["reasoning_content"] = reasoning
             self.messages.append(message)
@@ -94,42 +139,71 @@ class MicroAgent:
             function = call.get("function", {})
             name = function.get("name", "")
             arguments = json.loads(function.get("arguments", "{}"))
-            command = arguments.get("command", "") if isinstance(arguments, dict) else ""
+            command = (
+                arguments.get("command", "") if isinstance(arguments, dict) else ""
+            )
             if command:
-                self._display_command(command, "待执行", "yellow")
+                self._display_command(command, "Commands", "yellow")
             else:
                 console.print(f"Unsupported tool: {name}", markup=False)
 
             if name != "bash" or not isinstance(command, str) or not command:
                 output = "Unsupported or invalid tool call."
             elif (
-                self.mode == "ask" or (self.mode == "auto" and not is_auto_allowed(command, self.config.allow))
+                self.mode == "ask"
+                or (
+                    self.mode == "auto"
+                    and not is_auto_allowed(command, self.config.allow)
+                )
             ) and not self._confirm():
                 output = "Execution rejected by user."
             else:
                 output = self._run_command(command)
 
-            self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
-            console.print("[tool result]", style="green", markup=False)
-            console.print(output, markup=False)
+            self.messages.append(
+                {"role": "tool", "tool_call_id": call["id"], "content": output}
+            )
+            self._display_result(output, "Results", "Green")
 
     def _confirm(self) -> bool:
         """显示批准和拒绝方式，并按配置处理回车输入。"""
         enter_action = "approve" if self.config.approve_on_enter else "reject"
         console.print(
-            f"Approve tool call? Type y/yes to approve; n/no to reject. Enter to {enter_action}.",
+            f"Approve? y/yes or n/no. Enter to {enter_action}.",
             markup=False,
         )
         return approval_granted(prompt("> "), self.config.approve_on_enter)
 
     @staticmethod
     def _display_command(command: str, title: str, color: str) -> None:
-        """用 shell 语法高亮面板显示待执行或实际执行的命令。"""
-        console.print(Panel(Syntax(command, "bash", theme="monokai", word_wrap=True), title=title, border_style=color))
+        """用 shell 语法高亮面板显示待执行的命令。"""
+        console.print(
+            Panel(
+                Syntax(command, "bash", theme="monokai", word_wrap=True),
+                title=title,
+                border_style=color,
+            )
+        )
+
+    def _display_result(self, result: str, title: str, color: str) -> None:
+        """用面板显示实际执行的结果。"""
+        console.print(
+            Panel(
+                Syntax(
+                    result,
+                    "bash",
+                    theme="github-dark",
+                    word_wrap=True,
+                ),
+                title=title,
+                border_style=color,
+                padding=(0, 1),
+            )
+        )
 
     def _run_command(self, command: str) -> str:
-        """在当前目录运行 shell 命令，并把输出和退出码交给模型。"""
-        self._display_command(command, "实际执行", "green")
+        """在当前目录运行 shell 命令，并把合并后的输出交给模型。"""
+        # self._display_command(command, "实际执行", "green")
         try:
             result = subprocess.run(
                 command,
@@ -145,7 +219,7 @@ class MicroAgent:
             if isinstance(partial_output, bytes):
                 partial_output = partial_output.decode(errors="replace")
             return f"Command timed out after 30 seconds.\n{partial_output}"
-        return f"returncode: {result.returncode}\n{result.stdout}"
+        return result.stdout.rstrip("\n")
 
 
 def approval_granted(response: str, approve_on_enter: bool) -> bool:
@@ -168,15 +242,40 @@ def is_auto_allowed(command: str, allow: list[str]) -> bool:
 
     # find 的执行、删除和写入参数会改变文件或启动其他命令，必须询问。
     if parts[0] == "find" and any(
-        part in {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"} for part in parts[1:]
+        part
+        in {
+            "-exec",
+            "-execdir",
+            "-delete",
+            "-ok",
+            "-okdir",
+            "-fprint",
+            "-fprintf",
+            "-fls",
+        }
+        for part in parts[1:]
     ):
         return False
 
     # 即使通配符匹配，也只允许已知的只读命令和 git status。
     if parts[0] == "git":
         safe = (
-            len(parts) >= 2 and parts[1] == "status" and not any(part in {"-c", "--config-env"} for part in parts[1:])
+            len(parts) >= 2
+            and parts[1] == "status"
+            and not any(part in {"-c", "--config-env"} for part in parts[1:])
         )
     else:
-        safe = parts[0] in {"cat", "find", "grep", "head", "ls", "pwd", "rg", "stat", "tail", "tree", "wc"}
+        safe = parts[0] in {
+            "cat",
+            "find",
+            "grep",
+            "head",
+            "ls",
+            "pwd",
+            "rg",
+            "stat",
+            "tail",
+            "tree",
+            "wc",
+        }
     return safe and any(fnmatchcase(command, pattern) for pattern in allow)

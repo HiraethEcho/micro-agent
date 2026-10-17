@@ -30,7 +30,7 @@ def load_config(project_dir: Path | None = None, user_config_path: Path | None =
         settings.update(json.loads(user_config_path.read_text()))
 
     # 项目级配置优先，允许每个项目覆盖用户级设置。
-    project_config_path = project_dir / ".micro.json"
+    project_config_path = project_dir / "micro/settings.json"
     if project_config_path.is_file():
         settings.update(json.loads(project_config_path.read_text()))
 
