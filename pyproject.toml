@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "micro-agent"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "openai==2.54.0",
+    "prompt_toolkit==3.0.53",
+    "rich==15.0.0",
+    "typer==0.27.3",
+]
+
+[project.scripts]
+micro = "cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["agent", "cli", "config"]

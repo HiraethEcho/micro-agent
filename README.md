@@ -1,3 +1,5 @@
+# micro-agent
+
 基于 mini-SWE-agent 的 micro-agent
 
 极简循环和界面
@@ -14,4 +16,48 @@ todo
 - skills
 - json mode
 - subagents
-# micro-agent
+
+## 使用说明
+
+### 安装依赖
+
+需要 Python 3.10 或更高版本。安装 micro 直接使用的 Python 包：
+
+```bash
+uv sync
+```
+
+### 启动
+
+在项目根目录运行：
+
+```bash
+uv run micro
+```
+
+REPL 支持 `/mode yolo`、`/mode ask`、`/mode auto`、`/help` 和 `/quit`。
+
+### JSON 配置
+
+用户级配置路径是 `~/.config/micro/config.json`。项目级配置路径是项目根目录下的 `.micro.json`。项目配置会覆盖用户配置中的同名字段。
+
+```json
+{
+  "model": "ornith:9b",
+  "url": "http://localhost:11434",
+  "key": "",
+  "system_prompt": "You are a helpful assistant. Use tools when they help answer the user's request.",
+  "default_mode": "auto",
+  "allow": ["ls *", "git status *", "grep *"],
+  "approve_on_enter": false
+}
+```
+
+`allow` 列表只匹配 auto 模式下的只读命令。`*` 是通配符。写入命令、命令链、管道和重定向仍会要求确认。`approve_on_enter` 为 `true` 时，确认提示中的回车表示批准；为 `false` 时表示拒绝。
+
+### 依赖说明
+
+- `openai` 调用 Ollama 的 OpenAI 兼容接口。
+- `prompt_toolkit` 提供方向键、退格和中文输入编辑。
+- `rich` 提供终端颜色、面板和 Bash 命令高亮。
+- `typer` 提供 CLI 入口。
