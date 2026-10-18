@@ -136,6 +136,46 @@ def manage_system_prompts(agent: MicroAgent) -> None:
         console.print("System prompt sources updated.", style="yellow")
 
 
+def manage_skills(agent: MicroAgent) -> None:
+    """列出发现的 Skills，并切换所选 Skill 的 system prompt 元信息状态。"""
+    skills = agent.available_skills()
+    if not skills:
+        console.print("No skills found.", style="yellow")
+        return
+    for index, skill in enumerate(skills, 1):
+        enabled = agent.skill_states.get(skill.name, {}).get("enabled", True)
+        state = "enabled" if enabled else "disabled"
+        console.print(
+            f"{index}. [{state}] {skill.name} — {skill.title}\n"
+            f"   {skill.description}\n   {skill.path}",
+            markup=False,
+        )
+    choice = prompt("Select skill number (blank to cancel): ").strip()
+    if not choice:
+        return
+    try:
+        index = int(choice) - 1
+    except ValueError:
+        console.print("Invalid skill number.", style="yellow")
+        return
+    if index < 0 or index >= len(skills):
+        console.print("Invalid skill number.", style="yellow")
+        return
+    skill = skills[index]
+    current = agent.skill_states.get(skill.name, {}).get("enabled", True)
+    action = prompt("Action: [e]nable or [d]isable: ").strip().lower()
+    if action in {"e", "enable"}:
+        agent.set_skill_enabled(skill, True)
+    elif action in {"d", "disable"}:
+        agent.set_skill_enabled(skill, False)
+    else:
+        console.print("Unknown action; no change made.", style="yellow")
+        return
+    updated = action in {"e", "enable"}
+    if updated != current:
+        console.print("Skill state updated.", style="yellow")
+
+
 def process_command(agent: MicroAgent, text: str) -> bool:
     """处理 REPL 内置命令；返回 False 表示用户要求退出。"""
     command, _, argument = text.partition(" ")
@@ -145,6 +185,8 @@ def process_command(agent: MicroAgent, text: str) -> bool:
         console.print("/mode yolo|ask|auto  Switch tool execution mode")
         console.print("/append-system-prompt <text|file>  Add a system prompt source")
         console.print("/system-prompts        Manage prompt sources")
+        console.print("/skills                List and enable or disable skills")
+        console.print("/skill:<name> [text]   Inject a skill and optional task text")
         console.print("/print-system-prompt  Show the current system prompt")
         console.print("/resume                Choose and resume a saved session")
         console.print("/new-session           Start a new session")
@@ -176,6 +218,20 @@ def process_command(agent: MicroAgent, text: str) -> bool:
             )
     elif command == "/system-prompts":
         manage_system_prompts(agent)
+    elif command == "/skills":
+        manage_skills(agent)
+    elif command.startswith("/skill:"):
+        skill_name = command.removeprefix("/skill:")
+        if not skill_name:
+            console.print("Usage: /skill:<name> [additional message]", style="yellow")
+        else:
+            try:
+                skill_message = agent.inject_skill(skill_name, argument)
+            except (OSError, UnicodeError, ValueError) as error:
+                console.print(str(error), style="yellow", markup=False)
+            else:
+                console.print(f"Injected skill: {skill_name}", style="yellow")
+                agent.run_turn(skill_message)
     elif command == "/print-system-prompt":
         console.print(agent.get_system_prompt(), markup=False)
     elif command == "/resume":

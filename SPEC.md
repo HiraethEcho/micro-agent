@@ -48,10 +48,13 @@ Switch modes with `/mode yolo`, `/mode ask`, or `/mode auto`.
 - `/resume`: list saved sessions and interactively choose one to resume.
 - `/new-session`: create and switch to a new session.
 - `/name <name>`: set the current session's display name.
-- Skills discovery, `/skills` enable/disable, and `/skill:<name>` body injection are planned but not implemented. See `notes/skills-loading-design.md` for the design.
+- `/skills`: list discovered Skills and enable or disable one for system prompt metadata exposure.
+- `/skill:<name> [additional message]`: append the entire matching `SKILL.md` as a user message, followed by optional user text.
+- Skills are discovered from `.micro/skills/`, `.agents/skills/`, `~/.micro/skills/`, and `~/.agents/skills/` in priority order. The metadata `name` identifies a Skill; the first duplicate wins. Enabled Skills expose title, description, and path in the system prompt without including the body. See `notes/skills-loading-design.md`.
+- All discovered Skills are enabled by default. Explicit enable/disable state is stored as timestamped `skill_state` events in JSONL; `/skill:<name>` injects the requested file independently of that metadata exposure state.
 - `/help`: display available commands and the active mode.
 - `/quit`: exit the REPL.
-- Persist each session as JSONL under `.micro/sessions/` in the current working directory. Store prompt source definitions and state in the first JSONL record; append messages as they are produced with `YYYYMMDDTHHMMSS` timestamps.
+- Persist each session as JSONL under `.micro/sessions/` in the current working directory. Store session metadata and prompt source definitions in the first JSONL record; append messages and skill state events with `YYYYMMDDTHHMMSS` timestamps.
 - In modes that require confirmation, ask before executing the applicable tool call. `y/yes` approves and `n/no` rejects. Enter follows `approve_on_enter`.
 
 ## CLI session options

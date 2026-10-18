@@ -16,6 +16,7 @@ from rich.syntax import Syntax
 
 from config import DEFAULT_SYSTEM_PROMPT, MicroConfig
 from sessions import SessionStore
+from skills import Skill, discover_skills
 
 console = Console(highlight=False)
 Mode = Literal["yolo", "ask", "auto"]
@@ -82,6 +83,7 @@ class MicroAgent:
                     )
                 )
         self.session_store = session_store
+        self.skill_states = session_store.skill_states if session_store else {}
         api_url = config.url.rstrip("/")
         if not api_url.endswith("/v1"):
             api_url += "/v1"
@@ -143,6 +145,7 @@ class MicroAgent:
         self.system_append = (
             system_append if system_append is not None else session_store.system_appends
         )
+        self.skill_states = session_store.skill_states
 
     def _append_message(self, message: dict) -> None:
         """把消息加入内存历史并立即写入当前会话文件。"""
@@ -178,7 +181,58 @@ class MicroAgent:
                     )
             elif item.get("content"):
                 appended_sections.append(item["content"])
+        skill_directory = self._enabled_skills_prompt()
+        if skill_directory:
+            appended_sections.append(skill_directory)
         return "\n\n".join(appended_sections)
+
+    def available_skills(self) -> list[Skill]:
+        """按已配置优先级返回当前工作目录和用户目录中的 Skills。"""
+        return discover_skills()
+
+    def set_skill_enabled(self, skill: Skill, enabled: bool) -> None:
+        """更新当前会话中指定 skill 的暴露状态。"""
+        state = {"enabled": enabled, "path": str(skill.path)}
+        self.skill_states[skill.name] = state
+        if self.session_store:
+            self.session_store.set_skill_enabled(skill.name, str(skill.path), enabled)
+
+    def inject_skill(self, name: str, additional_message: str = "") -> str:
+        """读取 Skill 正文并构造成一条 user 消息。"""
+        skill = next((item for item in self.available_skills() if item.name == name), None)
+        if skill is None:
+            available = ", ".join(item.name for item in self.available_skills()) or "none"
+            raise ValueError(f"Skill not found: {name}. Available skills: {available}")
+        body = skill.path.read_text(encoding="utf-8").strip()
+        if additional_message.strip():
+            return f"{body}\n\nAdditional user message:\n{additional_message.strip()}"
+        return body
+
+    def _enabled_skills_prompt(self) -> str:
+        """将启用 Skills 的元信息目录加入 system prompt，不包含正文。"""
+        enabled = []
+        for skill in self.available_skills():
+            state = self.skill_states.get(skill.name, {})
+            if not state.get("enabled", True):
+                continue
+            enabled.append(
+                "- "
+                + json.dumps(
+                    {
+                        "name": skill.name,
+                        "title": skill.title,
+                        "description": skill.description,
+                        "path": str(skill.path),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if not enabled:
+            return ""
+        return (
+            "Available skills (metadata only; read the listed skill file with the available tools "
+            "before applying it when relevant):\n" + "\n".join(enabled)
+        )
 
     def refresh_project_instruction_sources(self) -> None:
         """将适用的 AGENTS.md 注册为可管理的默认文件来源。"""

@@ -24,7 +24,7 @@ class MicroConfig:
 def load_config(project_dir: Path | None = None, user_config_path: Path | None = None) -> MicroConfig:
     """按用户级、项目级的顺序读取配置，让项目配置覆盖用户配置。"""
     project_dir = project_dir or Path.cwd()
-    user_config_path = user_config_path or Path.home() / ".config/micro/config.json"
+    user_config_path = user_config_path or Path.home() / ".micro/settings.json"
     settings = {}
 
     # 用户级配置提供跨项目的默认设置。

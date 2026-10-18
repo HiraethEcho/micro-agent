@@ -19,6 +19,7 @@ class SessionStore:
         self.system_appends: list[dict] = []
         self.agents_initialized = False
         self.agents_removed_paths: list[str] = []
+        self.skill_states: dict[str, dict] = {}
 
     @classmethod
     def create(
@@ -94,6 +95,14 @@ class SessionStore:
         store.agents_initialized = bool(header.get("agents_initialized", False))
         store.agents_removed_paths = list(header.get("agents_removed_paths", []))
         store.system_appends = system_appends
+        for record in records[1:]:
+            if not isinstance(record, dict):
+                continue
+            if record.get("type") == "skill_state" and isinstance(record.get("name"), str):
+                store.skill_states[record["name"]] = {
+                    "enabled": bool(record.get("enabled")),
+                    "path": record.get("path"),
+                }
         messages = [
             record["message"]
             for record in records[1:]
@@ -159,6 +168,19 @@ class SessionStore:
                 "type": "message",
                 "timestamp": datetime.now().strftime("%Y%m%dT%H%M%S"),
                 "message": message,
+            }
+        )
+
+    def set_skill_enabled(self, name: str, path: str, enabled: bool) -> None:
+        """追加 skill 状态事件，恢复会话时按事件顺序重建状态。"""
+        state = {"enabled": enabled, "path": path}
+        self.skill_states[name] = state
+        self._write(
+            {
+                "type": "skill_state",
+                "timestamp": datetime.now().strftime("%Y%m%dT%H%M%S"),
+                "name": name,
+                **state,
             }
         )
 

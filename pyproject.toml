@@ -18,4 +18,4 @@ micro = "cli:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["agent", "cli", "config", "sessions"]
+py-modules = ["agent", "cli", "config", "sessions", "skills"]
