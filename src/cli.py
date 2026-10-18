@@ -5,6 +5,7 @@ from pathlib import Path
 
 import typer
 from prompt_toolkit import PromptSession
+from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 

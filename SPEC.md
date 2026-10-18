@@ -48,6 +48,7 @@ Switch modes with `/mode yolo`, `/mode ask`, or `/mode auto`.
 - `/resume`: list saved sessions and interactively choose one to resume.
 - `/new-session`: create and switch to a new session.
 - `/name <name>`: set the current session's display name.
+- Skills discovery, `/skills` enable/disable, and `/skill:<name>` body injection are planned but not implemented. See `notes/skills-loading-design.md` for the design.
 - `/help`: display available commands and the active mode.
 - `/quit`: exit the REPL.
 - Persist each session as JSONL under `.micro/sessions/` in the current working directory. Store prompt source definitions and state in the first JSONL record; append messages as they are produced with `YYYYMMDDTHHMMSS` timestamps.
@@ -72,4 +73,4 @@ A turn is the agent's current response and tool-call sequence for a user request
 
 - Environment selection or environment configuration.
 - Active model cost lookup or reporting.
-- Skills, JSON mode, subagents, and active steer/follow-up prompts.
+- JSON mode, subagents, and active steer/follow-up prompts.
