@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Use tools when they help answer the user's request."
+
 
 @dataclass
 class MicroConfig:
@@ -13,7 +15,7 @@ class MicroConfig:
     model: str = "ornith:9b"
     url: str = "http://localhost:11434"
     key: str = ""
-    system_prompt: str = "You are a helpful assistant. Use tools when they help answer the user's request."
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
     default_mode: Literal["yolo", "ask", "auto"] = "auto"
     allow: list[str] = field(default_factory=list)
     approve_on_enter: bool = False
@@ -30,7 +32,7 @@ def load_config(project_dir: Path | None = None, user_config_path: Path | None =
         settings.update(json.loads(user_config_path.read_text()))
 
     # 项目级配置优先，允许每个项目覆盖用户级设置。
-    project_config_path = project_dir / "micro/settings.json"
+    project_config_path = project_dir / ".micro" / "settings.json"
     if project_config_path.is_file():
         settings.update(json.loads(project_config_path.read_text()))
 

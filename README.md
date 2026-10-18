@@ -10,9 +10,7 @@
 
 todo
 
-- session manager
 - steer and follow up prompt
-- auto read AGENTS.md
 - skills
 - json mode
 - subagents
@@ -33,13 +31,17 @@ uv sync
 
 ```bash
 uv run micro
+uv run micro -c  # continue the most recent session
+uv run micro -r  # choose a session to resume
 ```
 
-REPL 支持 `/mode yolo`、`/mode ask`、`/mode auto`、`/system_prompt_append "额外指令"`、`/print-system-prompt`、`/help` 和 `/quit`。`/print-system-prompt` 显示当前基础 system prompt、会话追加内容和最新读取的 `AGENTS.md` 指令。追加指令只在当前会话生效；适用路径上的 `AGENTS.md` 会在每次模型请求前重新读取。
+`micro` 默认创建新会话；`-c` 恢复最近会话，`-r` 在启动时显示会话列表并交互选择。REPL 支持 `/mode yolo`、`/mode ask`、`/mode auto`、`/append-system-prompt <文本或文件>`、`/system-prompts`、`/print-system-prompt`、`/resume`、`/new-session`、`/name <新名称>`、`/help` 和 `/quit`。消息及 system prompt 来源以 JSONL 即时保存在当前工作目录的 `.micro/sessions/` 下，来源定义放在文件首行，每条消息记录包含 `YYYYMMDDTHHMMSS` 时间戳。`/system-prompts` 可交互启用、禁用或删除来源。文件来源每次请求模型前重读；`~` 和 `./` 分别按用户主目录和当前工作目录展开。
+
+`AGENTS.md` 会作为默认启用的 `file` 来源写入会话 JSONL，并在每次请求前重读；可通过 `/system-prompts` 禁用或移除。新发现的适用 `AGENTS.md` 会自动加入当前会话。`/print-system-prompt` 显示当前启用来源的实际内容。直接文本及文件路径都可以通过 `/append-system-prompt` 添加。
 
 ### JSON 配置
 
-用户级配置路径是 `~/.config/micro/config.json`。项目级配置路径是项目根目录下的 `.micro.json`。项目配置会覆盖用户配置中的同名字段。
+用户级配置路径是 `~/.config/micro/config.json`。项目级配置路径是项目根目录下的 `.micro/settings.json`。项目配置会覆盖用户配置中的同名字段。
 
 ```json
 {

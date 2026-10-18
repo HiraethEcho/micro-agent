@@ -3,6 +3,7 @@
 import json
 import shlex
 import subprocess
+from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Literal
@@ -13,7 +14,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from config import MicroConfig
+from config import DEFAULT_SYSTEM_PROMPT, MicroConfig
+from sessions import SessionStore
 
 console = Console(highlight=False)
 Mode = Literal["yolo", "ask", "auto"]
@@ -36,8 +38,8 @@ BASH_TOOL = {
 }
 
 
-def load_project_instructions(project_dir: Path | None = None) -> str:
-    """按仓库根目录到当前目录的顺序读取适用的 AGENTS.md。"""
+def find_project_instruction_files(project_dir: Path | None = None) -> list[Path]:
+    """按仓库根目录到当前目录的顺序查找适用的 AGENTS.md 文件。"""
     current_dir = (project_dir or Path.cwd()).resolve()
     ancestors = [current_dir, *current_dir.parents]
     repo_root = next((path for path in ancestors if (path / ".git").exists()), None)
@@ -54,25 +56,32 @@ def load_project_instructions(project_dir: Path | None = None) -> str:
             path = path.parent
         scope.reverse()
 
-    sections = []
-    for directory in scope:
-        instructions_path = directory / "AGENTS.md"
-        if instructions_path.is_file():
-            content = instructions_path.read_text(encoding="utf-8").strip()
-            if content:
-                sections.append(f"# Instructions from {instructions_path}\n{content}")
-    return "\n\n".join(sections)
+    return [directory / "AGENTS.md" for directory in scope if (directory / "AGENTS.md").is_file()]
 
 
 class MicroAgent:
     """管理对话历史，直接调用 Ollama 并执行模型返回的 bash 工具调用。"""
 
-    def __init__(self, config: MicroConfig):
-        """初始化 Ollama 客户端和空的对话历史。"""
+    def __init__(self, config: MicroConfig, session_store: SessionStore | None = None):
+        """初始化 Ollama 客户端、空的对话历史和当前会话存储。"""
         self.config = config
         self.mode: Mode = config.default_mode
         self.messages: list[dict] = []
-        self.system_append: list[str] = []
+        if session_store:
+            self.system_append = session_store.system_appends
+        else:
+            self.system_append = [
+                SessionStore._new_prompt_item(
+                    "default", content=DEFAULT_SYSTEM_PROMPT
+                )
+            ]
+            if config.system_prompt != DEFAULT_SYSTEM_PROMPT:
+                self.system_append.append(
+                    SessionStore._new_prompt_item(
+                        "setting", content=config.system_prompt
+                    )
+                )
+        self.session_store = session_store
         api_url = config.url.rstrip("/")
         if not api_url.endswith("/v1"):
             api_url += "/v1"
@@ -82,11 +91,7 @@ class MicroAgent:
 
     def run_turn(self, prompt: str) -> None:
         """加入用户输入，并循环请求模型直到本轮不再返回工具调用。"""
-        if not self.messages:
-            self.messages.append(
-                {"role": "system", "content": self.config.system_prompt}
-            )
-        self.messages.append({"role": "user", "content": prompt})
+        self._append_message({"role": "user", "content": prompt})
 
         # 每次响应都保留 assistant 工具请求和工具结果，供后续模型调用续接。
         while True:
@@ -105,36 +110,95 @@ class MicroAgent:
                 ]
             if reasoning := getattr(assistant, "reasoning_content", None):
                 message["reasoning_content"] = reasoning
-            self.messages.append(message)
-            self._display_assistant(message)
+            message_timestamp = self._message_timestamp()
+            self._append_message(message)
+            self._display_assistant(message, message_timestamp)
 
             if not assistant.tool_calls:
                 return
             self._execute_tool_calls(message["tool_calls"])
 
-    def append_system_prompt(self, text: str) -> None:
-        """将用户提供的补充指令保存到本会话的 system append。"""
-        if text.strip():
-            self.system_append.append(text.strip())
+    def append_system_prompt(
+        self, kind: str, *, content: str | None = None, path: str | None = None
+    ) -> dict:
+        """把文本或文件来源加入本会话的可管理 system append 列表。"""
+        if self.session_store:
+            item = self.session_store.add_system_prompt_item(
+                kind, content=content, path=path
+            )
+        else:
+            item = SessionStore._new_prompt_item(kind, content=content, path=path)
+            self.system_append.append(item)
+        return item
+
+    def switch_session(
+        self,
+        session_store: SessionStore,
+        messages: list[dict] | None = None,
+        system_append: list[dict] | None = None,
+    ) -> None:
+        """切换到已恢复或新建的会话。"""
+        self.session_store = session_store
+        self.messages = messages or []
+        self.system_append = (
+            system_append if system_append is not None else session_store.system_appends
+        )
+
+    def _append_message(self, message: dict) -> None:
+        """把消息加入内存历史并立即写入当前会话文件。"""
+        self.messages.append(message)
+        if self.session_store:
+            self.session_store.append_message(message)
+
+    @staticmethod
+    def _message_timestamp() -> str:
+        """为输出标签生成 YYYYMMDDTHHMMSS 格式的本地时间。"""
+        return datetime.now().strftime("%Y%m%dT%H%M%S")
 
     def get_system_prompt(self) -> str:
         """返回当前会话实际发给模型的 system 消息内容。"""
-        appended_content = self._system_append_content()
-        if not appended_content:
-            return self.config.system_prompt
-        return (
-            self.config.system_prompt
-            + "\n\n--- System append ---\n\n"
-            + appended_content
-        )
+        return self._system_append_content()
 
     def _system_append_content(self) -> str:
-        """合并会话追加内容和最新读取的项目指令。"""
-        appended_sections = list(self.system_append)
-        project_instructions = load_project_instructions()
-        if project_instructions:
-            appended_sections.append(project_instructions)
+        """合并当前启用的来源，并在请求时重新读取文件来源。"""
+        self.refresh_project_instruction_sources()
+        appended_sections = []
+        for item in self.system_append:
+            if not item.get("enabled", True):
+                continue
+            if item.get("kind") == "file":
+                path = Path(item["path"])
+                try:
+                    appended_sections.append(path.read_text(encoding="utf-8"))
+                except OSError as error:
+                    console.print(
+                        f"Cannot read system prompt file {path}: {error}",
+                        style="yellow",
+                        markup=False,
+                    )
+            elif item.get("content"):
+                appended_sections.append(item["content"])
         return "\n\n".join(appended_sections)
+
+    def refresh_project_instruction_sources(self) -> None:
+        """将适用的 AGENTS.md 注册为可管理的默认文件来源。"""
+        paths = find_project_instruction_files()
+        if self.session_store:
+            self.session_store.ensure_project_instruction_sources(paths)
+            self.system_append = self.session_store.system_appends
+            return
+        known_paths = {
+            item.get("path")
+            for item in self.system_append
+            if item.get("managed") == "agents"
+        }
+        for path in paths:
+            resolved = str(path.resolve())
+            if resolved not in known_paths:
+                item = SessionStore._new_prompt_item("file", path=resolved)
+                item["managed"] = "agents"
+                self.system_append.append(item)
+                known_paths.add(resolved)
 
     def _messages_with_system_append(self) -> list[dict]:
         """每次请求前重读 AGENTS.md，并将动态补充指令放在对话历史前部。"""
@@ -142,10 +206,10 @@ class MicroAgent:
         request_messages = list(self.messages)
         if appended_content:
             request_messages.insert(
-                1,
+                0,
                 {
                     "role": "system",
-                    "content": "System append:\n\n" + appended_content,
+                    "content": appended_content,
                 },
             )
         return request_messages
@@ -157,26 +221,28 @@ class MicroAgent:
         self.mode = mode
         console.print(f"Mode: {mode}", style="yellow")
 
-    def _display_assistant(self, message: dict) -> None:
+    def _display_assistant(self, message: dict, timestamp: str) -> None:
         """用不同标签输出模型的思考字段和普通回答。"""
         if reasoning := message.get("reasoning_content"):
             console.print("[thinking]", style="magenta", markup=False)
             console.print(str(reasoning), markup=False)
         if content := message.get("content"):
-            console.print("[assistant]", style="cyan", markup=False)
+            console.print(f"[assistant] {timestamp}", style="cyan", markup=False)
             console.print(str(content), markup=False)
 
     def _execute_tool_calls(self, tool_calls: list[dict]) -> None:
         """按当前模式确认工具调用，并把每项结果追加到对话历史。"""
         for call in tool_calls:
+            tool_timestamp = self._message_timestamp()
             function = call.get("function", {})
             name = function.get("name", "")
             arguments = json.loads(function.get("arguments", "{}"))
             command = (
                 arguments.get("command", "") if isinstance(arguments, dict) else ""
             )
+            console.print(f"[tool] {tool_timestamp}", style="yellow", markup=False)
             if command:
-                self._display_command(command, "Commands", "yellow")
+                self._display_command(command, "yellow")
             else:
                 console.print(f"Unsupported tool: {name}", markup=False)
 
@@ -193,10 +259,16 @@ class MicroAgent:
             else:
                 output = self._run_command(command)
 
-            self.messages.append(
-                {"role": "tool", "tool_call_id": call["id"], "content": output}
-            )
-            self._display_result(output, "Results", "Green")
+            result_timestamp = self._message_timestamp()
+            tool_message = {
+                "timestamp": result_timestamp,
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": output,
+            }
+            self._append_message(tool_message)
+            console.print(f"[result] {result_timestamp}", style="green", markup=False)
+            self._display_result(output, "Green")
 
     def _confirm(self) -> bool:
         """显示批准和拒绝方式，并按配置处理回车输入。"""
@@ -208,17 +280,16 @@ class MicroAgent:
         return approval_granted(prompt("> "), self.config.approve_on_enter)
 
     @staticmethod
-    def _display_command(command: str, title: str, color: str) -> None:
+    def _display_command(command: str, color: str) -> None:
         """用 shell 语法高亮面板显示待执行的命令。"""
         console.print(
             Panel(
                 Syntax(command, "bash", theme="monokai", word_wrap=True),
-                title=title,
                 border_style=color,
             )
         )
 
-    def _display_result(self, result: str, title: str, color: str) -> None:
+    def _display_result(self, result: str, color: str) -> None:
         """用面板显示实际执行的结果。"""
         console.print(
             Panel(
@@ -228,7 +299,6 @@ class MicroAgent:
                     theme="github-dark",
                     word_wrap=True,
                 ),
-                title=title,
                 border_style=color,
                 padding=(0, 1),
             )
@@ -236,7 +306,7 @@ class MicroAgent:
 
     def _run_command(self, command: str) -> str:
         """在当前目录运行 shell 命令，并把合并后的输出交给模型。"""
-        # self._display_command(command, "实际执行", "green")
+        # self._display_command(command, "green")
         try:
             result = subprocess.run(
                 command,

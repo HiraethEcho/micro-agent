@@ -12,7 +12,7 @@ Build a small, standalone conversational agent under `src`, inspired by mini. Ke
 Read JSON configuration files only; do not use mini environment configuration methods. Never load `.config/mini-swe-agent/.env` or another dotenv file.
 
 - User configuration: `~/.config/micro/config.json`.
-- Project configuration: `.micro.json` in the project directory.
+- Project configuration: `.micro/settings.json` in the project directory.
 - Load user configuration first. Project configuration overrides matching user settings.
 - Configuration fields: `model`, `url`, `key`, `system_prompt`, `default_mode`, `allow`, and `approve_on_enter`.
 - `allow` is a list of command patterns for auto mode. Patterns support `*`, such as `git status *`. It defaults to an empty list, so auto asks before every command until patterns are configured.
@@ -41,11 +41,23 @@ Switch modes with `/mode yolo`, `/mode ask`, or `/mode auto`.
 ## REPL commands
 
 - `/mode yolo`, `/mode ask`, `/mode auto`: change the active mode.
-- `/system_prompt_append <text>`: append session-only system instructions. Reload applicable `AGENTS.md` files before each model request so edits take effect during a session.
-- `/print-system-prompt`: display the configured system prompt together with current session append and freshly loaded `AGENTS.md` instructions.
+- `/append-system-prompt <text|file>`: add a direct text or file source to the current session. File paths support `~`, `./`, `../`, absolute paths, and `file:` prefix.
+- `/system-prompts`: interactively list sources and enable, disable, or remove one.
+- `/print-system-prompt`: display the current enabled system prompt sources.
+- Applicable `AGENTS.md` files are default-enabled `file` sources stored in the session header and reread before each model request. They can be managed with `/system-prompts`.
+- `/resume`: list saved sessions and interactively choose one to resume.
+- `/new-session`: create and switch to a new session.
+- `/name <name>`: set the current session's display name.
 - `/help`: display available commands and the active mode.
 - `/quit`: exit the REPL.
+- Persist each session as JSONL under `.micro/sessions/` in the current working directory. Store prompt source definitions and state in the first JSONL record; append messages as they are produced with `YYYYMMDDTHHMMSS` timestamps.
 - In modes that require confirmation, ask before executing the applicable tool call. `y/yes` approves and `n/no` rejects. Enter follows `approve_on_enter`.
+
+## CLI session options
+
+- `-c` / `--continue`: restore the most recent session in the current working directory.
+- `-r` / `--resume`: show saved sessions at startup and interactively select one to restore. Blank input cancels startup.
+- The options are mutually exclusive. Without either option, start a new session.
 
 ## Phase 2: steer and follow-up prompts
 
@@ -60,4 +72,4 @@ A turn is the agent's current response and tool-call sequence for a user request
 
 - Environment selection or environment configuration.
 - Active model cost lookup or reporting.
-- Features beyond conversation, tool calls, mode switching, help, exit, and steer/follow-up prompts.
+- Skills, JSON mode, subagents, and active steer/follow-up prompts.
