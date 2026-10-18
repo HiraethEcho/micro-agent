@@ -63,6 +63,18 @@ Switch modes with `/mode yolo`, `/mode ask`, or `/mode auto`.
 - `-r` / `--resume`: show saved sessions at startup and interactively select one to restore. Blank input cancels startup.
 - The options are mutually exclusive. Without either option, start a new session.
 
+## CLI modes and JSON Lines interface
+
+- `--mode yolo|ask|auto` overrides `default_mode` for this process in both the terminal REPL and JSON mode. The selected mode controls every bash tool call in every turn.
+- `--json` uses JSON Lines on stdin and stdout. Each input line is an object: `{"type":"prompt","text":"...","id":"optional-client-id"}`. The process emits one JSON object per line and keeps diagnostics out of stdout.
+- `-p` / `--prompt` sends one prompt and exits after its turn. It requires `--json`.
+- `--session ID` resumes a saved session; `-c` resumes the latest; `--new-session` explicitly starts a new one. With no selector, JSON mode starts a new persistent session. `--no-session` disables persistence and cannot be combined with session selection or naming.
+- `--name` sets the selected persistent session's display name.
+- Startup emits a `session` event. Each prompt emits `turn.started`, then `assistant.message`, `tool.call`, `tool.result`, and any approval or error events as they occur, followed by `turn.completed` or `turn.failed`.
+- Every turn event carries `request_id` and `turn_id`. Prompt `id` is echoed as `request_id`; otherwise micro generates one. Tool events carry the model's `call_id`, and tool results include `status`, `output`, `exit_code`, and `timed_out` when applicable.
+- When mode requires approval, micro emits `tool.approval_required` and waits for `{"type":"approval","call_id":"...","approved":true|false}`. A response must match the pending call ID. For streaming input, prompt requests received while waiting are queued until the current turn ends.
+- Input errors produce an `error` event. The process exits with status 1 if any input or turn error occurred; otherwise it exits with status 0.
+
 ## Phase 2: steer and follow-up prompts
 
 Do not implement these features in the first phase. In phase 2, keep the REPL able to accept `/steer xxx` and `/follow xxx` while the model is responding.
@@ -76,4 +88,4 @@ A turn is the agent's current response and tool-call sequence for a user request
 
 - Environment selection or environment configuration.
 - Active model cost lookup or reporting.
-- JSON mode, subagents, and active steer/follow-up prompts.
+- Subagents and active steer/follow-up prompts.

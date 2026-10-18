@@ -12,7 +12,6 @@ todo
 
 - steer and follow up prompt
 - skills
-- json mode
 - subagents
 
 ## 使用说明
@@ -33,11 +32,15 @@ uv sync
 uv run micro
 uv run micro -c  # continue the most recent session
 uv run micro -r  # choose a session to resume
+uv run micro --mode ask
+uv run micro --json --mode auto -p "Summarize this project"
 ```
 
 `micro` 默认创建新会话；`-c` 恢复最近会话，`-r` 在启动时显示会话列表并交互选择。REPL 支持 `/mode yolo`、`/mode ask`、`/mode auto`、`/append-system-prompt <文本或文件>`、`/system-prompts`、`/skills`、`/skill:<name> [追加任务文本]`、`/print-system-prompt`、`/resume`、`/new-session`、`/name <新名称>`、`/help` 和 `/quit`。消息及 system prompt 来源以 JSONL 即时保存在当前工作目录的 `.micro/sessions/` 下，来源定义放在文件首行，每条消息记录包含 `YYYYMMDDTHHMMSS` 时间戳。`/system-prompts` 可交互启用、禁用或删除普通 prompt 来源；`/skills` 管理 Skills。文件来源每次请求模型前重读；`~` 和 `./` 分别按用户主目录和当前工作目录展开。
 
 `AGENTS.md` 会作为默认启用的 `file` 来源写入会话 JSONL，并在每次请求前重读；可通过 `/system-prompts` 禁用或移除。新发现的适用 `AGENTS.md` 会自动加入当前会话。`/print-system-prompt` 显示当前启用来源的实际内容。直接文本及文件路径都可以通过 `/append-system-prompt` 添加。
+
+`--mode yolo|ask|auto` 可在本次运行中覆盖配置的默认模式，交互式和 JSON 模式都适用。JSON 模式使用 stdin/stdout 的 JSONL 协议：每行输入 `{"type":"prompt","text":"...","id":"optional-id"}`，输出会话、turn、assistant 和工具事件；需要确认的工具调用会发出 `tool.approval_required`，客户端需回传带匹配 `call_id` 的 `{"type":"approval","call_id":"...","approved":true}`。`-p/--prompt` 用于发送一次 prompt 后退出。会话选项包括 `--session ID`、`-c`、`--new-session`、`--name` 和 `--no-session`。详细事件格式见 [SPEC.md](SPEC.md)。
 
 Skills 按 `.micro/skills/`、`.agents/skills/`、`~/.micro/skills/`、`~/.agents/skills/` 的顺序发现；同名项由优先级高的覆盖。每个 skill 目录使用标准文件名 `SKILL.md`。发现的 Skills 默认启用；`/skills` 可管理当前会话中各 Skill 的启用状态，启用时 system prompt 只包含 Skill 的元数据和路径。`/skill:<name>` 将完整 `SKILL.md` 文件及可选追加文本作为一条 user 消息发送。
 

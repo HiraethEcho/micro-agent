@@ -1,6 +1,8 @@
 """读取 micro 配置并提供独立的终端 REPL。"""
 
+import json
 import shlex
+import sys
 from pathlib import Path
 
 import typer
@@ -9,8 +11,9 @@ from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 
-from agent import MicroAgent, find_project_instruction_files
+from agent import MicroAgent, Mode, find_project_instruction_files
 from config import DEFAULT_SYSTEM_PROMPT, MicroConfig, load_config
+from json_mode import run_json_protocol
 from sessions import SessionStore
 
 console = Console(highlight=False)
@@ -278,33 +281,111 @@ def main(
     resume: bool = typer.Option(
         False, "--resume", "-r", help="Choose a session to resume."
     ),
+    json_mode: bool = typer.Option(
+        False, "--json", help="Use JSON Lines on stdin and stdout."
+    ),
+    json_prompt: str | None = typer.Option(
+        None, "-p", "--prompt", help="Send one prompt in JSON mode."
+    ),
+    session_id: str | None = typer.Option(
+        None, "--session", help="Resume a specific session by ID."
+    ),
+    new_session: bool = typer.Option(
+        False, "--new-session", help="Start a new session."
+    ),
+    session_name: str | None = typer.Option(
+        None, "--name", help="Set the session display name."
+    ),
+    no_session: bool = typer.Option(
+        False, "--no-session", help="Do not persist a session (JSON mode only)."
+    ),
+    mode: Mode | None = typer.Option(
+        None, "--mode", help="Override the configured tool mode: yolo, ask, or auto."
+    ),
 ) -> None:
-    """读取 JSON 配置并运行保留对话历史的终端循环。"""
-    if continue_last and resume:
-        raise typer.BadParameter("Use either -c or -r, not both.")
-
-    sessions = SessionStore.list_sessions()
-    restored = None
-    if continue_last and sessions:
-        try:
-            restored = SessionStore.load(sessions[0]["id"])
-        except (FileNotFoundError, ValueError) as error:
-            console.print(str(error), style="yellow", markup=False)
-    elif resume and sessions:
-        restored = choose_session(sessions)
-        if restored is None:
-            return
-    elif resume:
-        console.print("No saved sessions; starting a new session.", style="yellow")
+    """根据 CLI 选项运行交互式 REPL 或 JSON Lines 协议。"""
+    if sum((continue_last, resume, session_id is not None, new_session)) > 1:
+        raise typer.BadParameter(
+            "Choose only one of -c, -r, --session, or --new-session."
+        )
+    if json_mode and resume:
+        raise typer.BadParameter(
+            "Interactive -r cannot be used with --json; use --session ID."
+        )
+    if no_session and not json_mode:
+        raise typer.BadParameter("--no-session requires --json.")
+    if json_prompt is not None and not json_mode:
+        raise typer.BadParameter("-p/--prompt requires --json.")
+    if no_session and (continue_last or session_id is not None):
+        raise typer.BadParameter("--no-session cannot be combined with -c or --session.")
+    if no_session and new_session:
+        raise typer.BadParameter("--no-session cannot be combined with --new-session.")
+    if no_session and session_name is not None:
+        raise typer.BadParameter("--name requires a persistent session.")
 
     config = load_config()
-    store = restored[0] if restored else create_session(config)
+    if mode is not None:
+        config.default_mode = mode
+
+    restored = None
+    if session_id is not None:
+        try:
+            restored = SessionStore.load(session_id)
+        except (FileNotFoundError, ValueError) as error:
+            raise typer.BadParameter(str(error)) from error
+    elif continue_last:
+        sessions = SessionStore.list_sessions()
+        if sessions:
+            try:
+                restored = SessionStore.load(sessions[0]["id"])
+            except (FileNotFoundError, ValueError) as error:
+                if json_mode:
+                    raise typer.BadParameter(str(error)) from error
+                console.print(str(error), style="yellow", markup=False)
+    elif resume:
+        sessions = SessionStore.list_sessions()
+        if sessions:
+            restored = choose_session(sessions)
+            if restored is None:
+                return
+        else:
+            console.print("No saved sessions; starting a new session.", style="yellow")
+
+    store = None
+    if not no_session:
+        store = restored[0] if restored else create_session(config)
+        if session_name is not None:
+            store.set_name(session_name)
     agent = build_agent(config, store)
     if restored:
         agent.switch_session(*restored)
+
+    if json_mode:
+        write_event = _write_json_event
+        write_event(
+            {
+                "type": "session",
+                "session_id": store.session_id if store else None,
+                "name": store.name if store else None,
+                "persistent": store is not None,
+                "resumed": restored is not None,
+                "mode": agent.mode,
+            }
+        )
+        return_code = run_json_protocol(
+            agent,
+            sys.stdin,
+            write_event,
+            initial_prompt=json_prompt,
+        )
+        if return_code:
+            raise typer.Exit(code=return_code)
+        return
+
     console.print(f"micro — mode: {agent.mode}")
-    session_label = agent.session_store.name or agent.session_store.session_id
-    console.print(f"Session: {session_label} [{agent.session_store.session_id}]")
+    if store:
+        session_label = store.name or store.session_id
+        console.print(f"Session: {session_label} [{store.session_id}]")
     console.print("Type /help for commands.")
 
     # 主输入复用同一 history，向上键可调出本次运行中之前的输入。
@@ -317,6 +398,12 @@ def main(
             continue
         if text:
             agent.run_turn(text)
+
+
+def _write_json_event(event: dict) -> None:
+    """将单个紧凑 JSON 事件写入 stdout 并立即刷新。"""
+    sys.stdout.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

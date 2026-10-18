@@ -3,10 +3,11 @@
 import json
 import shlex
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from openai import OpenAI
 from prompt_toolkit import prompt
@@ -19,7 +20,21 @@ from sessions import SessionStore
 from skills import Skill, discover_skills
 
 console = Console(highlight=False)
+diagnostic_console = Console(stderr=True, highlight=False)
 Mode = Literal["yolo", "ask", "auto"]
+EventSink = Callable[[dict], None]
+ApprovalHandler = Callable[[dict], bool]
+
+
+@dataclass
+class CommandResult:
+    """保存工具执行结果，分别供模型和 JSON 客户端使用。"""
+
+    output: str
+    exit_code: int | None
+    timed_out: bool = False
+
+
 BASH_TOOL = {
     "type": "function",
     "function": {
@@ -91,19 +106,32 @@ class MicroAgent:
         # OpenAI 客户端要求提供 key；本地 Ollama 不校验占位 key。
         self.client = OpenAI(base_url=api_url, api_key=config.key or "ollama")
 
-    def run_turn(self, prompt: str) -> None:
-        """加入用户输入，并循环请求模型直到本轮不再返回工具调用。"""
+    def run_turn(
+        self,
+        prompt: str,
+        *,
+        event_sink: EventSink | None = None,
+        approval_handler: ApprovalHandler | None = None,
+    ) -> None:
+        """执行一轮对话；可将 assistant 与工具事件发送给调用方。"""
         self._append_message({"role": "user", "content": prompt})
 
         # 每次响应都保留 assistant 工具请求和工具结果，供后续模型调用续接。
         while True:
             request_messages = self._messages_with_system_append()
-            with console.status("Waiting for the model..."):
+            if event_sink:
                 response = self.client.chat.completions.create(
                     model=self.config.model,
                     messages=request_messages,
                     tools=[BASH_TOOL],
                 )
+            else:
+                with console.status("Waiting for the model..."):
+                    response = self.client.chat.completions.create(
+                        model=self.config.model,
+                        messages=request_messages,
+                        tools=[BASH_TOOL],
+                    )
             assistant = response.choices[0].message
             message = {"role": "assistant", "content": assistant.content or ""}
             if assistant.tool_calls:
@@ -114,11 +142,24 @@ class MicroAgent:
                 message["reasoning_content"] = reasoning
             message_timestamp = self._message_timestamp()
             self._append_message(message)
-            self._display_assistant(message, message_timestamp)
+            if event_sink:
+                event_sink(
+                    {
+                        "type": "assistant.message",
+                        "timestamp": message_timestamp,
+                        "message": message,
+                    }
+                )
+            else:
+                self._display_assistant(message, message_timestamp)
 
             if not assistant.tool_calls:
                 return
-            self._execute_tool_calls(message["tool_calls"])
+            self._execute_tool_calls(
+                message["tool_calls"],
+                event_sink=event_sink,
+                approval_handler=approval_handler,
+            )
 
     def append_system_prompt(
         self, kind: str, *, content: str | None = None, path: str | None = None
@@ -174,7 +215,7 @@ class MicroAgent:
                 try:
                     appended_sections.append(path.read_text(encoding="utf-8"))
                 except OSError as error:
-                    console.print(
+                    diagnostic_console.print(
                         f"Cannot read system prompt file {path}: {error}",
                         style="yellow",
                         markup=False,
@@ -284,45 +325,105 @@ class MicroAgent:
             console.print(f"[assistant] {timestamp}", style="cyan", markup=False)
             console.print(str(content), markup=False)
 
-    def _execute_tool_calls(self, tool_calls: list[dict]) -> None:
-        """按当前模式确认工具调用，并把每项结果追加到对话历史。"""
+    def _execute_tool_calls(
+        self,
+        tool_calls: list[dict],
+        *,
+        event_sink: EventSink | None = None,
+        approval_handler: ApprovalHandler | None = None,
+    ) -> None:
+        """按当前模式执行工具，并保存与调用 ID 对应的结果。"""
         for call in tool_calls:
             tool_timestamp = self._message_timestamp()
-            function = call.get("function", {})
+            function = call.get("function")
+            if not isinstance(function, dict):
+                function = {}
             name = function.get("name", "")
-            arguments = json.loads(function.get("arguments", "{}"))
-            command = (
-                arguments.get("command", "") if isinstance(arguments, dict) else ""
-            )
-            console.print(f"[tool] {tool_timestamp}", style="yellow", markup=False)
-            if command:
-                self._display_command(command, "yellow")
-            else:
-                console.print(f"Unsupported tool: {name}", markup=False)
+            call_id = call.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError("Model returned a tool call without an id.")
+            raw_arguments = function.get("arguments", "{}")
+            try:
+                arguments = json.loads(raw_arguments)
+            except (TypeError, json.JSONDecodeError):
+                arguments = None
+            command = arguments.get("command") if isinstance(arguments, dict) else None
 
-            if name != "bash" or not isinstance(command, str) or not command:
-                output = "Unsupported or invalid tool call."
-            elif (
-                self.mode == "ask"
-                or (
-                    self.mode == "auto"
-                    and not is_auto_allowed(command, self.config.allow)
+            if event_sink:
+                event_sink(
+                    {
+                        "type": "tool.call",
+                        "timestamp": tool_timestamp,
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": (
+                            arguments if isinstance(arguments, dict) else raw_arguments
+                        ),
+                    }
                 )
-            ) and not self._confirm():
-                output = "Execution rejected by user."
             else:
-                output = self._run_command(command)
+                console.print(f"[tool] {tool_timestamp}", style="yellow", markup=False)
+                if isinstance(command, str) and command:
+                    self._display_command(command, "yellow")
+                else:
+                    console.print(f"Unsupported tool: {name}", markup=False)
+
+            approved: bool | None = None
+            if not isinstance(command, str) or not command or name != "bash":
+                result = CommandResult("Unsupported or invalid tool call.", None)
+                status = "error"
+            elif self._requires_approval(command):
+                approval_payload = {
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                }
+                approved = (
+                    approval_handler(approval_payload)
+                    if approval_handler
+                    else self._confirm()
+                )
+                if approved:
+                    result = self._run_command(command)
+                    status = "timeout" if result.timed_out else "completed"
+                else:
+                    result = CommandResult("Execution rejected by user.", None)
+                    status = "rejected"
+            else:
+                approved = True
+                result = self._run_command(command)
+                status = "timeout" if result.timed_out else "completed"
 
             result_timestamp = self._message_timestamp()
             tool_message = {
-                "timestamp": result_timestamp,
                 "role": "tool",
-                "tool_call_id": call["id"],
-                "content": output,
+                "tool_call_id": call_id,
+                "content": result.output,
             }
             self._append_message(tool_message)
-            console.print(f"[result] {result_timestamp}", style="green", markup=False)
-            self._display_result(output, "Green")
+            if event_sink:
+                event = {
+                    "type": "tool.result",
+                    "timestamp": result_timestamp,
+                    "call_id": call_id,
+                    "status": status,
+                    "output": result.output,
+                    "exit_code": result.exit_code,
+                }
+                if approved is not None:
+                    event["approved"] = approved
+                if result.timed_out:
+                    event["timed_out"] = True
+                event_sink(event)
+            else:
+                console.print(f"[result] {result_timestamp}", style="green", markup=False)
+                self._display_result(result.output, "Green")
+
+    def _requires_approval(self, command: str) -> bool:
+        """根据 yolo、ask 或 auto 模式判断是否需确认命令。"""
+        return self.mode == "ask" or (
+            self.mode == "auto" and not is_auto_allowed(command, self.config.allow)
+        )
 
     def _confirm(self) -> bool:
         """显示批准和拒绝方式，并按配置处理回车输入。"""
@@ -358,8 +459,8 @@ class MicroAgent:
             )
         )
 
-    def _run_command(self, command: str) -> str:
-        """在当前目录运行 shell 命令，并把合并后的输出交给模型。"""
+    def _run_command(self, command: str) -> CommandResult:
+        """在当前目录执行 shell 命令，并保留输出、退出码和超时状态。"""
         # self._display_command(command, "green")
         try:
             result = subprocess.run(
@@ -375,8 +476,12 @@ class MicroAgent:
             partial_output = error.stdout or ""
             if isinstance(partial_output, bytes):
                 partial_output = partial_output.decode(errors="replace")
-            return f"Command timed out after 30 seconds.\n{partial_output}"
-        return result.stdout.rstrip("\n")
+            return CommandResult(
+                f"Command timed out after 30 seconds.\n{partial_output}",
+                None,
+                timed_out=True,
+            )
+        return CommandResult(result.stdout.rstrip("\n"), result.returncode)
 
 
 def approval_granted(response: str, approve_on_enter: bool) -> bool:
