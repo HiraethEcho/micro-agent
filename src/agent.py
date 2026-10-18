@@ -72,7 +72,7 @@ class MicroAgent:
         self.config = config
         self.mode: Mode = config.default_mode
         self.messages: list[dict] = []
-        self.project_instructions = load_project_instructions()
+        self.system_append: list[str] = []
         api_url = config.url.rstrip("/")
         if not api_url.endswith("/v1"):
             api_url += "/v1"
@@ -83,23 +83,18 @@ class MicroAgent:
     def run_turn(self, prompt: str) -> None:
         """加入用户输入，并循环请求模型直到本轮不再返回工具调用。"""
         if not self.messages:
-            system_prompt = self.config.system_prompt
-            if self.project_instructions:
-                system_prompt += (
-                    "\n\nProject instructions (AGENTS.md):\n"
-                    + self.project_instructions
-                )
             self.messages.append(
-                {"role": "system", "content": system_prompt}
+                {"role": "system", "content": self.config.system_prompt}
             )
         self.messages.append({"role": "user", "content": prompt})
 
         # 每次响应都保留 assistant 工具请求和工具结果，供后续模型调用续接。
         while True:
+            request_messages = self._messages_with_system_append()
             with console.status("Waiting for the model..."):
                 response = self.client.chat.completions.create(
                     model=self.config.model,
-                    messages=self.messages,
+                    messages=request_messages,
                     tools=[BASH_TOOL],
                 )
             assistant = response.choices[0].message
@@ -116,6 +111,44 @@ class MicroAgent:
             if not assistant.tool_calls:
                 return
             self._execute_tool_calls(message["tool_calls"])
+
+    def append_system_prompt(self, text: str) -> None:
+        """将用户提供的补充指令保存到本会话的 system append。"""
+        if text.strip():
+            self.system_append.append(text.strip())
+
+    def get_system_prompt(self) -> str:
+        """返回当前会话实际发给模型的 system 消息内容。"""
+        appended_content = self._system_append_content()
+        if not appended_content:
+            return self.config.system_prompt
+        return (
+            self.config.system_prompt
+            + "\n\n--- System append ---\n\n"
+            + appended_content
+        )
+
+    def _system_append_content(self) -> str:
+        """合并会话追加内容和最新读取的项目指令。"""
+        appended_sections = list(self.system_append)
+        project_instructions = load_project_instructions()
+        if project_instructions:
+            appended_sections.append(project_instructions)
+        return "\n\n".join(appended_sections)
+
+    def _messages_with_system_append(self) -> list[dict]:
+        """每次请求前重读 AGENTS.md，并将动态补充指令放在对话历史前部。"""
+        appended_content = self._system_append_content()
+        request_messages = list(self.messages)
+        if appended_content:
+            request_messages.insert(
+                1,
+                {
+                    "role": "system",
+                    "content": "System append:\n\n" + appended_content,
+                },
+            )
+        return request_messages
 
     def set_mode(self, mode: Mode) -> None:
         """验证并切换工具执行模式。"""

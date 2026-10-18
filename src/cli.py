@@ -1,5 +1,7 @@
 """读取 micro 配置并提供独立的终端 REPL。"""
 
+import shlex
+
 import typer
 from prompt_toolkit import prompt
 from rich.console import Console
@@ -23,6 +25,8 @@ def process_command(agent: MicroAgent, text: str) -> bool:
         return False
     if command == "/help":
         console.print("/mode yolo|ask|auto  Switch tool execution mode")
+        console.print('/system-prompt-append "text"  Append system instructions for this session')
+        console.print("/print-system-prompt  Show the current system prompt")
         console.print("/help                 Show this help")
         console.print("/quit                 Exit micro")
         console.print(f"Current mode: {agent.mode}")
@@ -31,6 +35,24 @@ def process_command(agent: MicroAgent, text: str) -> bool:
             agent.set_mode(argument)
         else:
             console.print("Usage: /mode yolo|ask|auto", style="yellow")
+    elif command == "/system-prompt-append":
+        if argument:
+            try:
+                parts = shlex.split(argument)
+            except ValueError:
+                console.print("Invalid quoting in system prompt append.", style="yellow")
+            else:
+                agent.append_system_prompt(" ".join(parts))
+                console.print(
+                    "System prompt append updated for this session.", style="yellow"
+                )
+        else:
+            console.print(
+                'Usage: /system-prompt-append "additional instructions"',
+                style="yellow",
+            )
+    elif command == "/print-system-prompt":
+        console.print(agent.get_system_prompt(), markup=False)
     else:
         return True
     return True

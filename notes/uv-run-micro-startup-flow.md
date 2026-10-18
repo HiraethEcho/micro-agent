@@ -17,7 +17,7 @@ uv → 项目虚拟环境 → .venv/bin/micro
   → cli:app → cli.main()
   → load_config() 读取两级 JSON 配置
   → MicroAgent(config) 建立 Ollama OpenAI 兼容客户端
-  → 读取仓库根目录至当前目录的 AGENTS.md 并合入 system 指令
+  → 每次请求重读 AGENTS.md，并把它与会话 system append 合并为额外 system 消息
   → REPL 读取输入
   → run_turn() ⇄ chat.completions.create()
   → 需要时确认并运行 bash 命令
@@ -45,8 +45,7 @@ uv → 项目虚拟环境 → .venv/bin/micro
 3. 再读取当前工作目录的 `.micro.json`（若文件存在）；同名字段由项目配置覆盖用户配置。
 4. 将合并后的字段传给 `MicroConfig` 数据类。默认模型为 `ornith:9b`，默认 Ollama 地址为 `http://localhost:11434`，默认模式为 `auto`。未知字段或非法模式会报错。
 5. `build_agent()` 创建 `MicroAgent(config)`。代理把地址补成 OpenAI 兼容 API 的 `/v1` 路径，并以配置中的 key 初始化 `OpenAI` 客户端；空 key 使用占位值 `ollama`。
-6. `MicroAgent` 查找当前 Git 仓库根目录到工作目录路径上的 `AGENTS.md`，按根到叶的顺序读取，并在首次模型请求时追加到 system 消息。没有 Git 仓库时只检查当前目录。仓库外的祖先目录不会被读取。
-7. CLI 显示当前模式和帮助提示，然后进入 REPL。没有启动时任务参数；每条普通输入由用户在提示符中提供。
+6. CLI 显示当前模式和帮助提示，然后进入 REPL。`/system_prompt_append "额外指令"` 可在本会话追加 system 指令；`/print-system-prompt` 显示当前基础指令和追加指令。没有启动时任务参数；每条普通输入由用户在提示符中提供。
 
 ---
 
@@ -59,9 +58,10 @@ uv → 项目虚拟环境 → .venv/bin/micro
    - `/mode yolo|ask|auto` 切换工具执行模式。
 3. 其他非空输入交给 `MicroAgent.run_turn()`（`src/agent.py`）。
 4. 首轮对话时，代理先把 `config.system_prompt` 作为 system 消息加入历史，再加入本轮 user 消息。后续轮次复用同一份 `messages`，保留完整对话历史。
-5. 代理调用 `client.chat.completions.create()`，传入模型名、历史消息和唯一工具 `bash`。模型服务由 `url` 指定，默认对应本机 Ollama。
-6. 将 assistant 的正文、工具调用，以及可用时的 `reasoning_content` 加入历史并显示在终端。
-7. 若响应没有工具调用，本轮结束并回到 REPL；若有工具调用，则进入执行流程，执行结果作为 `role="tool"` 消息加入历史，然后继续请求模型，直到模型返回普通回答。
+5. 每次调用模型前，代理重新发现并读取当前 Git 仓库根目录到工作目录路径上的 `AGENTS.md`，按根到叶顺序组织内容；没有 Git 仓库时只检查当前目录。仓库外祖先目录不会读取。`/system_prompt_append` 添加的本会话指令与 AGENTS 内容一起放在额外的 system 消息中，不改写基础 `system_prompt`。因此 AGENTS 文件在会话期间修改后，会在下一次模型请求时生效。
+6. 代理调用 `client.chat.completions.create()`，传入模型名、历史消息和唯一工具 `bash`。模型服务由 `url` 指定，默认对应本机 Ollama。
+7. 将 assistant 的正文、工具调用，以及可用时的 `reasoning_content` 加入历史并显示在终端。
+8. 若响应没有工具调用，本轮结束并回到 REPL；若有工具调用，则进入执行流程，执行结果作为 `role="tool"` 消息加入历史，然后继续请求模型，直到模型返回普通回答。
 
 ---
 
@@ -75,7 +75,7 @@ uv → 项目虚拟环境 → .venv/bin/micro
 3. 自动放行规则先拒绝命令链、管道、重定向、变量展开等 shell 组合字符；只允许一组明确的只读命令，以及 `git status`。`find` 的执行、删除等选项也会被拒绝自动放行。
 4. `allow` 只提供模式匹配，不会放宽只读命令限制。例如可在 JSON 配置中写 `"allow": ["ls *", "git status *"]`。
 5. 确认提示接受 `y`/`yes` 批准、`n`/`no` 拒绝。空输入根据 `approve_on_enter` 决定：`true` 表示批准，`false` 表示拒绝。
-6. 获准命令通过 `subprocess.run(..., shell=True)` 在当前工作目录执行，合并 stdout 和 stderr，超时为 30 秒。输出及退出码组成工具结果；超时则返回超时说明和已产生的部分输出。
+6. 获准命令通过 `subprocess.run(..., shell=True)` 在当前工作目录执行，合并 stdout 和 stderr，超时为 30 秒。标准输出和错误输出组成工具结果；超时则返回超时说明和已产生的部分输出。
 7. 工具结果追加到消息历史，随后模型可以读取结果并继续调用工具或作答。
 
 ---

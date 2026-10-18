@@ -35,7 +35,7 @@ uv sync
 uv run micro
 ```
 
-REPL 支持 `/mode yolo`、`/mode ask`、`/mode auto`、`/help` 和 `/quit`。
+REPL 支持 `/mode yolo`、`/mode ask`、`/mode auto`、`/system_prompt_append "额外指令"`、`/print-system-prompt`、`/help` 和 `/quit`。`/print-system-prompt` 显示当前基础 system prompt、会话追加内容和最新读取的 `AGENTS.md` 指令。追加指令只在当前会话生效；适用路径上的 `AGENTS.md` 会在每次模型请求前重新读取。
 
 ### JSON 配置
 

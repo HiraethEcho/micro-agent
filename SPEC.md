@@ -41,6 +41,8 @@ Switch modes with `/mode yolo`, `/mode ask`, or `/mode auto`.
 ## REPL commands
 
 - `/mode yolo`, `/mode ask`, `/mode auto`: change the active mode.
+- `/system_prompt_append <text>`: append session-only system instructions. Reload applicable `AGENTS.md` files before each model request so edits take effect during a session.
+- `/print-system-prompt`: display the configured system prompt together with current session append and freshly loaded `AGENTS.md` instructions.
 - `/help`: display available commands and the active mode.
 - `/quit`: exit the REPL.
 - In modes that require confirmation, ask before executing the applicable tool call. `y/yes` approves and `n/no` rejects. Enter follows `approve_on_enter`.
